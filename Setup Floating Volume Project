@@ -1,0 +1,2188 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROJECT_DIR="${1:-FloatingVolume}"
+
+echo "Creating updated Android project structure in ./$PROJECT_DIR ..."
+
+mkdir -p "$PROJECT_DIR/app/src/main/java/com/lightweight/floatingvolume"
+mkdir -p "$PROJECT_DIR/app/src/main/res/layout"
+mkdir -p "$PROJECT_DIR/app/src/main/res/values"
+mkdir -p "$PROJECT_DIR/app/src/main/res/xml"
+
+# 1. Root settings.gradle.kts
+cat << 'EOF' > "$PROJECT_DIR/settings.gradle.kts"
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+rootProject.name = "FloatingVolume"
+include(":app")
+EOF
+
+# 2. Root build.gradle.kts
+cat << 'EOF' > "$PROJECT_DIR/build.gradle.kts"
+plugins {
+    id("com.android.application") version "8.5.0" apply false
+    id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+}
+EOF
+
+# 3. gradle.properties
+cat << 'EOF' > "$PROJECT_DIR/gradle.properties"
+org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+android.useAndroidX=true
+kotlin.code.style=official
+android.nonTransitiveRClass=true
+EOF
+
+# 4. app/build.gradle.kts
+cat << 'EOF' > "$PROJECT_DIR/app/build.gradle.kts"
+plugins {
+    id("com.android.application")
+    id("org.jetbrains.kotlin.android")
+}
+
+android {
+    namespace = "com.lightweight.floatingvolume"
+    compileSdk = 34
+
+    defaultConfig {
+        applicationId = "com.lightweight.floatingvolume"
+        minSdk = 24
+        targetSdk = 34
+        versionCode = 2
+        versionName = "1.1.0"
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = "17"
+    }
+}
+
+dependencies {
+    implementation("androidx.core:core-ktx:1.13.1")
+    implementation("androidx.appcompat:appcompat:1.7.0")
+    implementation("com.google.android.material:material:1.12.0")
+}
+EOF
+
+# 5. app/proguard-rules.pro
+cat << 'EOF' > "$PROJECT_DIR/app/proguard-rules.pro"
+# Keep Service, Activity, AccessibilityService, and BroadcastReceiver entry points
+-keep class com.lightweight.floatingvolume.** { *; }
+EOF
+
+# 6. app/src/main/AndroidManifest.xml
+cat << 'EOF' > "$PROJECT_DIR/app/src/main/AndroidManifest.xml"
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    package="com.lightweight.floatingvolume">
+
+    <!-- System Overlay Permission for Floating Button & Volume Panel -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
+    <!-- Foreground Service Permissions (Special Use + Media Playback for Background Audio Control) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+
+    <!-- Notification Permission for Android 13+ (API 33+) -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- Audio & Do Not Disturb Policy Control -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
+
+    <!-- Auto-Start on Device Reboot -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <!-- Battery Optimization Ignore Request -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
+    <application
+        android:allowBackup="true"
+        android:icon="@android:drawable/ic_lock_silent_mode_off"
+        android:label="Floating Volume"
+        android:roundIcon="@android:drawable/ic_lock_silent_mode_off"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.MaterialComponents.DayNight.NoActionBar"
+        tools:targetApi="34">
+
+        <!-- Main Configuration & Permission Checklist Activity -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- Persistent Foreground Floating Volume Service -->
+        <service
+            android:name=".FloatingVolumeService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="specialUse|mediaPlayback">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="accessibility_volume_overlay_replacement_for_broken_hardware_buttons" />
+        </service>
+
+        <!-- Accessibility Service Fallback (Bypasses Strict OEM Background Audio Blocks) -->
+        <service
+            android:name=".VolumeAccessibilityService"
+            android:enabled="true"
+            android:exported="false"
+            android:label="Floating Volume Hardware Key Helper"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
+        </service>
+
+        <!-- Quick Settings Tile Service in Pull-Down Notification Shade -->
+        <service
+            android:name=".VolumeTileService"
+            android:enabled="true"
+            android:exported="true"
+            android:icon="@android:drawable/ic_lock_silent_mode_off"
+            android:label="Volume Panel"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
+        <!-- Boot Completed Receiver to Auto-Start Overlay Service After Reboot -->
+        <receiver
+            android:name=".BootReceiver"
+            android:directBootAware="true"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+
+    </application>
+
+</manifest>
+EOF
+
+# 7. res/values/strings.xml & res/xml/accessibility_service_config.xml
+cat << 'EOF' > "$PROJECT_DIR/app/src/main/res/values/strings.xml"
+<resources>
+    <string name="app_name">Floating Volume</string>
+    <string name="accessibility_service_description">Allows Floating Volume to adjust Media, Ring, Alarm, and Call volume streams reliably while other apps are in the foreground.</string>
+</resources>
+EOF
+
+cat << 'EOF' > "$PROJECT_DIR/app/src/main/res/xml/accessibility_service_config.xml"
+<?xml version="1.0" encoding="utf-8"?>
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeMaskNone"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagDefault"
+    android:canRetrieveWindowContent="false"
+    android:description="@string/accessibility_service_description"
+    android:notificationTimeout="100" />
+EOF
+
+# 8. VolumeAccessibilityService.kt
+cat << 'EOF' > "$PROJECT_DIR/app/src/main/java/com/lightweight/floatingvolume/VolumeAccessibilityService.kt"
+package com.lightweight.floatingvolume
+
+import android.accessibilityservice.AccessibilityService
+import android.content.Context
+import android.media.AudioManager
+import android.view.accessibility.AccessibilityEvent
+
+class VolumeAccessibilityService : AccessibilityService() {
+
+    companion object {
+        @Volatile
+        var instance: VolumeAccessibilityService? = null
+            private set
+
+        fun setVolumePrivileged(
+            fallbackContext: Context,
+            streamType: Int,
+            targetIndex: Int,
+            showSystemUiPopup: Boolean = false
+        ) {
+            val activeContext = instance ?: fallbackContext
+            val am = activeContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            val flags = if (showSystemUiPopup) AudioManager.FLAG_SHOW_UI else 0
+
+            // 1. Attempt direct volume index assignment from elevated context
+            am.setStreamVolume(streamType, targetIndex, flags)
+
+            // 2. If the OEM or background hardening ignored setStreamVolume, step-adjust using adjustStreamVolume
+            var current = am.getStreamVolume(streamType)
+            if (current != targetIndex) {
+                val maxSteps = 25
+                var steps = 0
+                while (current != targetIndex && steps < maxSteps) {
+                    val direction = if (targetIndex > current) {
+                        AudioManager.ADJUST_RAISE
+                    } else {
+                        AudioManager.ADJUST_LOWER
+                    }
+                    am.adjustStreamVolume(streamType, direction, flags)
+                    val updated = am.getStreamVolume(streamType)
+                    if (updated == current) break
+                    current = updated
+                    steps++
+                }
+            }
+        }
+    }
+
+    override fun onServiceConnected() {
+        super.onServiceConnected()
+        instance = this
+    }
+
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        // No screen inspection needed; only provides privileged system context for background volume control
+    }
+
+    override fun onInterrupt() {}
+
+    override fun onDestroy() {
+        if (instance === this) {
+            instance = null
+        }
+        super.onDestroy()
+    }
+}
+EOF
+
+# 9. MainActivity.kt
+cat << 'EOF' > "$PROJECT_DIR/app/src/main/java/com/lightweight/floatingvolume/MainActivity.kt"
+package com.lightweight.floatingvolume
+
+import android.app.NotificationManager
+import android.content.ComponentName
+import android.content.Context
+import android.content.Intent
+import android.graphics.Color
+import android.net.Uri
+import android.os.Build
+import android.os.Bundle
+import android.os.PowerManager
+import android.provider.Settings
+import android.text.TextUtils
+import android.widget.Button
+import android.widget.RadioButton
+import android.widget.RadioGroup
+import android.widget.SeekBar
+import android.widget.TextView
+import android.widget.Toast
+import androidx.appcompat.app.AppCompatActivity
+import androidx.appcompat.widget.SwitchCompat
+
+class MainActivity : AppCompatActivity() {
+
+    private lateinit var prefs: android.content.SharedPreferences
+
+    private lateinit var switchMasterService: SwitchCompat
+    private lateinit var tvOverlayStatus: TextView
+    private lateinit var btnGrantOverlay: Button
+    private lateinit var tvDndStatus: TextView
+    private lateinit var btnGrantDnd: Button
+    private lateinit var tvBatteryStatus: TextView
+    private lateinit var btnGrantBattery: Button
+    private lateinit var tvAccessibilityStatus: TextView
+    private lateinit var btnGrantAccessibility: Button
+
+    private lateinit var rgButtonSize: RadioGroup
+    private lateinit var rbSizeSmall: RadioButton
+    private lateinit var rbSizeMedium: RadioButton
+    private lateinit var rbSizeLarge: RadioButton
+
+    private lateinit var seekIdleOpacity: SeekBar
+    private lateinit var tvIdleOpacityValue: TextView
+
+    private lateinit var rgThemeAccent: RadioGroup
+    private lateinit var rbThemeDark: RadioButton
+    private lateinit var rbThemeLight: RadioButton
+    private lateinit var rbThemeSystem: RadioButton
+
+    private lateinit var btnTriggerPanelNow: Button
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_main)
+
+        prefs = getSharedPreferences(FloatingVolumeService.PREFS_NAME, Context.MODE_PRIVATE)
+
+        bindViews()
+        loadSavedPreferences()
+        setupListeners()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        updatePermissionChecklistUI()
+        syncServiceSwitchState()
+    }
+
+    private fun bindViews() {
+        switchMasterService = findViewById(R.id.switchMasterService)
+
+        tvOverlayStatus = findViewById(R.id.tvOverlayStatus)
+        btnGrantOverlay = findViewById(R.id.btnGrantOverlay)
+
+        tvDndStatus = findViewById(R.id.tvDndStatus)
+        btnGrantDnd = findViewById(R.id.btnGrantDnd)
+
+        tvBatteryStatus = findViewById(R.id.tvBatteryStatus)
+        btnGrantBattery = findViewById(R.id.btnGrantBattery)
+
+        tvAccessibilityStatus = findViewById(R.id.tvAccessibilityStatus)
+        btnGrantAccessibility = findViewById(R.id.btnGrantAccessibility)
+
+        rgButtonSize = findViewById(R.id.rgButtonSize)
+        rbSizeSmall = findViewById(R.id.rbSizeSmall)
+        rbSizeMedium = findViewById(R.id.rbSizeMedium)
+        rbSizeLarge = findViewById(R.id.rbSizeLarge)
+
+        seekIdleOpacity = findViewById(R.id.seekIdleOpacity)
+        tvIdleOpacityValue = findViewById(R.id.tvIdleOpacityValue)
+
+        rgThemeAccent = findViewById(R.id.rgThemeAccent)
+        rbThemeDark = findViewById(R.id.rbThemeDark)
+        rbThemeLight = findViewById(R.id.rbThemeLight)
+        rbThemeSystem = findViewById(R.id.rbThemeSystem)
+
+        btnTriggerPanelNow = findViewById(R.id.btnTriggerPanelNow)
+    }
+
+    private fun loadSavedPreferences() {
+        when (prefs.getInt(FloatingVolumeService.KEY_BUTTON_SIZE, 1)) {
+            0 -> rbSizeSmall.isChecked = true
+            1 -> rbSizeMedium.isChecked = true
+            2 -> rbSizeLarge.isChecked = true
+        }
+
+        val savedOpacity = prefs.getInt(FloatingVolumeService.KEY_IDLE_OPACITY, 30).coerceIn(10, 100)
+        seekIdleOpacity.max = 90
+        seekIdleOpacity.progress = savedOpacity - 10
+        tvIdleOpacityValue.text = "$savedOpacity%"
+
+        when (prefs.getInt(FloatingVolumeService.KEY_THEME_MODE, 2)) {
+            0 -> rbThemeDark.isChecked = true
+            1 -> rbThemeLight.isChecked = true
+            2 -> rbThemeSystem.isChecked = true
+        }
+    }
+
+    private fun setupListeners() {
+        switchMasterService.setOnCheckedChangeListener { buttonView, isChecked ->
+            if (!buttonView.isPressed) return@setOnCheckedChangeListener
+
+            if (isChecked) {
+                if (!Settings.canDrawOverlays(this)) {
+                    switchMasterService.isChecked = false
+                    Toast.makeText(
+                        this,
+                        "Please grant 'Display over other apps' permission first.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                    requestOverlayPermission()
+                    return@setOnCheckedChangeListener
+                }
+                prefs.edit().putBoolean(FloatingVolumeService.KEY_SERVICE_ENABLED, true).apply()
+                startFloatingService(FloatingVolumeService.ACTION_START)
+            } else {
+                prefs.edit().putBoolean(FloatingVolumeService.KEY_SERVICE_ENABLED, false).apply()
+                stopService(Intent(this, FloatingVolumeService::class.java))
+            }
+        }
+
+        btnGrantOverlay.setOnClickListener {
+            requestOverlayPermission()
+        }
+
+        btnGrantDnd.setOnClickListener {
+            val intent = Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS)
+            startActivity(intent)
+        }
+
+        btnGrantBattery.setOnClickListener {
+            requestIgnoreBatteryOptimizations()
+        }
+
+        btnGrantAccessibility.setOnClickListener {
+            val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+            startActivity(intent)
+        }
+
+        rgButtonSize.setOnCheckedChangeListener { _, checkedId ->
+            val sizeIndex = when (checkedId) {
+                R.id.rbSizeSmall -> 0
+                R.id.rbSizeLarge -> 2
+                else -> 1
+            }
+            prefs.edit().putInt(FloatingVolumeService.KEY_BUTTON_SIZE, sizeIndex).apply()
+            notifyServiceConfigChanged()
+        }
+
+        seekIdleOpacity.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                val actualPercent = (progress + 10).coerceIn(10, 100)
+                tvIdleOpacityValue.text = "$actualPercent%"
+                if (fromUser) {
+                    prefs.edit().putInt(FloatingVolumeService.KEY_IDLE_OPACITY, actualPercent).apply()
+                    notifyServiceConfigChanged()
+                }
+            }
+
+            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+        })
+
+        rgThemeAccent.setOnCheckedChangeListener { _, checkedId ->
+            val themeMode = when (checkedId) {
+                R.id.rbThemeDark -> 0
+                R.id.rbThemeLight -> 1
+                else -> 2
+            }
+            prefs.edit().putInt(FloatingVolumeService.KEY_THEME_MODE, themeMode).apply()
+            notifyServiceConfigChanged()
+        }
+
+        btnTriggerPanelNow.setOnClickListener {
+            if (!Settings.canDrawOverlays(this)) {
+                Toast.makeText(
+                    this,
+                    "Grant 'Display over other apps' permission first.",
+                    Toast.LENGTH_SHORT
+                ).show()
+                requestOverlayPermission()
+                return@setOnClickListener
+            }
+            prefs.edit().putBoolean(FloatingVolumeService.KEY_SERVICE_ENABLED, true).apply()
+            switchMasterService.isChecked = true
+            startFloatingService(FloatingVolumeService.ACTION_EXPAND_PANEL)
+        }
+    }
+
+    private fun updatePermissionChecklistUI() {
+        val hasOverlay = Settings.canDrawOverlays(this)
+        if (hasOverlay) {
+            tvOverlayStatus.text = "Granted"
+            tvOverlayStatus.setTextColor(Color.parseColor("#2E7D32"))
+            btnGrantOverlay.text = "Configured"
+            btnGrantOverlay.isEnabled = false
+        } else {
+            tvOverlayStatus.text = "Required"
+            tvOverlayStatus.setTextColor(Color.parseColor("#C62828"))
+            btnGrantOverlay.text = "Grant"
+            btnGrantOverlay.isEnabled = true
+        }
+
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        val hasDnd = nm.isNotificationPolicyAccessGranted
+        if (hasDnd) {
+            tvDndStatus.text = "Granted"
+            tvDndStatus.setTextColor(Color.parseColor("#2E7D32"))
+            btnGrantDnd.text = "Configured"
+            btnGrantDnd.isEnabled = false
+        } else {
+            tvDndStatus.text = "Required for Mute/DND"
+            tvDndStatus.setTextColor(Color.parseColor("#EF6C00"))
+            btnGrantDnd.text = "Grant"
+            btnGrantDnd.isEnabled = true
+        }
+
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        val isIgnoringBattery = pm.isIgnoringBatteryOptimizations(packageName)
+        if (isIgnoringBattery) {
+            tvBatteryStatus.text = "Unrestricted"
+            tvBatteryStatus.setTextColor(Color.parseColor("#2E7D32"))
+            btnGrantBattery.text = "Configured"
+            btnGrantBattery.isEnabled = false
+        } else {
+            tvBatteryStatus.text = "Optimized (May Close)"
+            tvBatteryStatus.setTextColor(Color.parseColor("#EF6C00"))
+            btnGrantBattery.text = "Disable"
+            btnGrantBattery.isEnabled = true
+        }
+
+        val hasAccessibility = isAccessibilityServiceEnabled()
+        if (hasAccessibility) {
+            tvAccessibilityStatus.text = "Enabled (Background Volume Unlocked)"
+            tvAccessibilityStatus.setTextColor(Color.parseColor("#2E7D32"))
+            btnGrantAccessibility.text = "Configured"
+            btnGrantAccessibility.isEnabled = false
+        } else {
+            tvAccessibilityStatus.text = "Recommended if sliders don't change volume outside app"
+            tvAccessibilityStatus.setTextColor(Color.parseColor("#EF6C00"))
+            btnGrantAccessibility.text = "Enable"
+            btnGrantAccessibility.isEnabled = true
+        }
+    }
+
+    private fun isAccessibilityServiceEnabled(): Boolean {
+        val expectedComponent = ComponentName(this, VolumeAccessibilityService::class.java)
+        val enabledServices = Settings.Secure.getString(
+            contentResolver,
+            Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+        ) ?: return false
+
+        val splitter = TextUtils.SimpleStringSplitter(':')
+        splitter.setString(enabledServices)
+        while (splitter.hasNext()) {
+            val componentStr = splitter.next()
+            val enabledComponent = ComponentName.unflattenFromString(componentStr)
+            if (enabledComponent != null && enabledComponent == expectedComponent) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private fun syncServiceSwitchState() {
+        val hasOverlay = Settings.canDrawOverlays(this)
+        val serviceEnabled = prefs.getBoolean(FloatingVolumeService.KEY_SERVICE_ENABLED, false)
+        switchMasterService.isChecked = hasOverlay && serviceEnabled
+
+        if (hasOverlay && serviceEnabled) {
+            startFloatingService(FloatingVolumeService.ACTION_START)
+        }
+    }
+
+    private fun requestOverlayPermission() {
+        val intent = Intent(
+            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+            Uri.parse("package:$packageName")
+        )
+        startActivity(intent)
+    }
+
+    private fun requestIgnoreBatteryOptimizations() {
+        try {
+            val intent = Intent(
+                Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                Uri.parse("package:$packageName")
+            )
+            startActivity(intent)
+        } catch (e: Exception) {
+            val fallbackIntent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+            startActivity(fallbackIntent)
+        }
+    }
+
+    private fun notifyServiceConfigChanged() {
+        if (Settings.canDrawOverlays(this) &&
+            prefs.getBoolean(FloatingVolumeService.KEY_SERVICE_ENABLED, false)
+        ) {
+            startFloatingService(FloatingVolumeService.ACTION_UPDATE_CONFIG)
+        }
+    }
+
+    private fun startFloatingService(action: String) {
+        val intent = Intent(this, FloatingVolumeService::class.java).apply {
+            this.action = action
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(intent)
+        } else {
+            startService(intent)
+        }
+    }
+}
+EOF
+
+# 10. FloatingVolumeService.kt
+cat << 'EOF' > "$PROJECT_DIR/app/src/main/java/com/lightweight/floatingvolume/FloatingVolumeService.kt"
+package com.lightweight.floatingvolume
+
+import android.animation.ValueAnimator
+import android.annotation.SuppressLint
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.Service
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.content.SharedPreferences
+import android.content.pm.ServiceInfo
+import android.content.res.Configuration
+import android.graphics.Color
+import android.graphics.PixelFormat
+import android.graphics.drawable.GradientDrawable
+import android.media.AudioManager
+import android.os.Build
+import android.os.Handler
+import android.os.IBinder
+import android.os.Looper
+import android.provider.Settings
+import android.util.DisplayMetrics
+import android.util.TypedValue
+import android.view.Gravity
+import android.view.LayoutInflater
+import android.view.MotionEvent
+import android.view.View
+import android.view.WindowManager
+import android.view.animation.DecelerateInterpolator
+import android.widget.Button
+import android.widget.FrameLayout
+import android.widget.ImageView
+import android.widget.LinearLayout
+import android.widget.SeekBar
+import android.widget.TextView
+import android.widget.Toast
+import androidx.core.app.NotificationCompat
+import kotlin.math.abs
+
+class FloatingVolumeService : Service() {
+
+    companion object {
+        const val PREFS_NAME = "floating_volume_prefs"
+        const val KEY_SERVICE_ENABLED = "service_enabled"
+        const val KEY_BUTTON_SIZE = "button_size"          // 0=Small(44dp), 1=Medium(56dp), 2=Large(68dp)
+        const val KEY_IDLE_OPACITY = "idle_opacity"        // 10..100 (default 30)
+        const val KEY_THEME_MODE = "theme_mode"            // 0=Dark, 1=Light, 2=System
+        const val KEY_SAVED_X = "saved_x"
+        const val KEY_SAVED_Y = "saved_y"
+
+        const val ACTION_START = "com.lightweight.floatingvolume.ACTION_START"
+        const val ACTION_EXPAND_PANEL = "com.lightweight.floatingvolume.ACTION_EXPAND_PANEL"
+        const val ACTION_TOGGLE_VISIBILITY = "com.lightweight.floatingvolume.ACTION_TOGGLE_VISIBILITY"
+        const val ACTION_UPDATE_CONFIG = "com.lightweight.floatingvolume.ACTION_UPDATE_CONFIG"
+        const val ACTION_STOP = "com.lightweight.floatingvolume.ACTION_STOP"
+
+        private const val CHANNEL_ID = "floating_volume_silent_channel"
+        private const val NOTIFICATION_ID = 1001
+
+        private const val IDLE_FADE_DELAY_MS = 3000L
+        private const val PANEL_AUTO_DISMISS_MS = 4000L
+        private const val CLICK_DRAG_TOLERANCE_DP = 8f
+
+        @Volatile
+        var isRunning: Boolean = false
+            private set
+    }
+
+    private lateinit var windowManager: WindowManager
+    private lateinit var audioManager: AudioManager
+    private lateinit var notificationManager: NotificationManager
+    private lateinit var prefs: SharedPreferences
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    private var rootOverlayView: View? = null
+    private lateinit var layoutParams: WindowManager.LayoutParams
+
+    private lateinit var bubbleContainer: FrameLayout
+    private lateinit var ivBubbleIcon: ImageView
+    private lateinit var panelCard: LinearLayout
+
+    private lateinit var seekMedia: SeekBar
+    private lateinit var seekRing: SeekBar
+    private lateinit var seekAlarm: SeekBar
+    private lateinit var seekVoice: SeekBar
+
+    private lateinit var tvMediaVal: TextView
+    private lateinit var tvRingVal: TextView
+    private lateinit var tvAlarmVal: TextView
+    private lateinit var tvVoiceVal: TextView
+
+    private lateinit var tvPanelTitle: TextView
+    private lateinit var tvLabelMedia: TextView
+    private lateinit var tvLabelRing: TextView
+    private lateinit var tvLabelAlarm: TextView
+    private lateinit var tvLabelVoice: TextView
+
+    private lateinit var btnRingerMode: Button
+    private lateinit var btnDndToggle: Button
+
+    private var isPanelExpanded = false
+    private var isBubbleHiddenByUser = false
+    private var isUserDraggingSlider = false
+    private var idleAlphaFraction = 0.30f
+
+    private var snapAnimator: ValueAnimator? = null
+
+    private val idleFadeRunnable = Runnable {
+        if (!isPanelExpanded && rootOverlayView != null) {
+            bubbleContainer.animate()
+                .alpha(idleAlphaFraction)
+                .setDuration(300L)
+                .start()
+        }
+    }
+
+    private val autoDismissPanelRunnable = Runnable {
+        if (isPanelExpanded && !isUserDraggingSlider) {
+            collapseVolumePanel()
+        }
+    }
+
+    private val systemAudioReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (isPanelExpanded && !isUserDraggingSlider) {
+                syncAllSlidersWithSystem()
+                updateQuickToggleButtonsUI()
+            }
+        }
+    }
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onCreate() {
+        super.onCreate()
+        isRunning = true
+
+        windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+        createSilentNotificationChannel()
+        startForegroundServiceCompat()
+
+        if (Settings.canDrawOverlays(this)) {
+            initOverlayView()
+        } else {
+            stopSelf()
+            return
+        }
+
+        val filter = IntentFilter().apply {
+            addAction("android.media.VOLUME_CHANGED_ACTION")
+            addAction(AudioManager.RINGER_MODE_CHANGED_ACTION)
+            addAction(NotificationManager.ACTION_INTERRUPTION_FILTER_CHANGED)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(systemAudioReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(systemAudioReceiver, filter)
+        }
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        startForegroundServiceCompat()
+
+        if (!Settings.canDrawOverlays(this)) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
+        if (rootOverlayView == null) {
+            initOverlayView()
+        }
+
+        when (intent?.action) {
+            ACTION_EXPAND_PANEL -> {
+                isBubbleHiddenByUser = false
+                rootOverlayView?.visibility = View.VISIBLE
+                expandVolumePanel()
+            }
+            ACTION_TOGGLE_VISIBILITY -> {
+                if (isPanelExpanded) {
+                    collapseVolumePanel()
+                } else {
+                    isBubbleHiddenByUser = !isBubbleHiddenByUser
+                    rootOverlayView?.visibility = if (isBubbleHiddenByUser) View.GONE else View.VISIBLE
+                    if (!isBubbleHiddenByUser) {
+                        wakeUpBubbleAndScheduleFade()
+                    }
+                }
+            }
+            ACTION_UPDATE_CONFIG -> {
+                applyUserCustomizations()
+            }
+            ACTION_STOP -> {
+                prefs.edit().putBoolean(KEY_SERVICE_ENABLED, false).apply()
+                stopSelf()
+                return START_NOT_STICKY
+            }
+            else -> {
+                isBubbleHiddenByUser = false
+                rootOverlayView?.visibility = View.VISIBLE
+                applyUserCustomizations()
+                wakeUpBubbleAndScheduleFade()
+            }
+        }
+
+        return START_STICKY
+    }
+
+    private fun startForegroundServiceCompat() {
+        val notification = buildSilentForegroundNotification()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(
+                NOTIFICATION_ID,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE or
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+            )
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(
+                NOTIFICATION_ID,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+            )
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
+    }
+
+    private fun createSilentNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                CHANNEL_ID,
+                "Floating Volume Control",
+                NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                description = "Keeps the floating volume button active in the background"
+                setShowBadge(false)
+                enableLights(false)
+                enableVibration(false)
+                setSound(null, null)
+            }
+            notificationManager.createNotificationChannel(channel)
+        }
+    }
+
+    private fun buildSilentForegroundNotification(): Notification {
+        val expandIntent = Intent(this, FloatingVolumeService::class.java).apply {
+            action = ACTION_EXPAND_PANEL
+        }
+        val expandPendingIntent = PendingIntent.getService(
+            this,
+            101,
+            expandIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val toggleVisibilityIntent = Intent(this, FloatingVolumeService::class.java).apply {
+            action = ACTION_TOGGLE_VISIBILITY
+        }
+        val togglePendingIntent = PendingIntent.getService(
+            this,
+            102,
+            toggleVisibilityIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val settingsIntent = Intent(this, MainActivity::class.java)
+        val settingsPendingIntent = PendingIntent.getActivity(
+            this,
+            103,
+            settingsIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        return NotificationCompat.Builder(this, CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.ic_lock_silent_mode_off)
+            .setContentTitle("Floating Volume Active")
+            .setContentText("Tap to open volume sliders • Use actions to hide/configure")
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setSilent(true)
+            .setOngoing(true)
+            .setContentIntent(expandPendingIntent)
+            .addAction(
+                android.R.drawable.ic_menu_view,
+                "Show / Hide Bubble",
+                togglePendingIntent
+            )
+            .addAction(
+                android.R.drawable.ic_menu_preferences,
+                "Settings",
+                settingsPendingIntent
+            )
+            .build()
+    }
+
+    @SuppressLint("InflateParams", "ClickableViewAccessibility")
+    private fun initOverlayView() {
+        val inflater = LayoutInflater.from(this)
+        val view = inflater.inflate(R.layout.layout_floating_widget, null)
+        rootOverlayView = view
+
+        bubbleContainer = view.findViewById(R.id.bubbleContainer)
+        ivBubbleIcon = view.findViewById(R.id.ivBubbleIcon)
+        panelCard = view.findViewById(R.id.panelCard)
+
+        seekMedia = view.findViewById(R.id.seekMedia)
+        seekRing = view.findViewById(R.id.seekRing)
+        seekAlarm = view.findViewById(R.id.seekAlarm)
+        seekVoice = view.findViewById(R.id.seekVoice)
+
+        tvMediaVal = view.findViewById(R.id.tvMediaVal)
+        tvRingVal = view.findViewById(R.id.tvRingVal)
+        tvAlarmVal = view.findViewById(R.id.tvAlarmVal)
+        tvVoiceVal = view.findViewById(R.id.tvVoiceVal)
+
+        tvPanelTitle = view.findViewById(R.id.tvPanelTitle)
+        tvLabelMedia = view.findViewById(R.id.tvLabelMedia)
+        tvLabelRing = view.findViewById(R.id.tvLabelRing)
+        tvLabelAlarm = view.findViewById(R.id.tvLabelAlarm)
+        tvLabelVoice = view.findViewById(R.id.tvLabelVoice)
+
+        btnRingerMode = view.findViewById(R.id.btnRingerMode)
+        btnDndToggle = view.findViewById(R.id.btnDndToggle)
+
+        val overlayType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+        } else {
+            @Suppress("DEPRECATION")
+            WindowManager.LayoutParams.TYPE_PHONE
+        }
+
+        val screenBounds = getScreenSize()
+        val initialX = prefs.getInt(KEY_SAVED_X, screenBounds.first - dpToPx(64f))
+        val initialY = prefs.getInt(KEY_SAVED_Y, screenBounds.second / 3)
+
+        layoutParams = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            overlayType,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = initialX.coerceIn(0, screenBounds.first)
+            y = initialY.coerceIn(0, screenBounds.second)
+        }
+
+        setupBubbleDragAndTapPhysics()
+        setupVolumeSliders()
+        setupQuickActionToggles()
+        setupOutsideTouchAutoDismiss(view)
+
+        applyUserCustomizations()
+
+        windowManager.addView(view, layoutParams)
+        wakeUpBubbleAndScheduleFade()
+    }
+
+    @SuppressLint("ClickableViewAccessibility")
+    private fun setupBubbleDragAndTapPhysics() {
+        var initialParamX = 0
+        var initialParamY = 0
+        var initialTouchX = 0f
+        var initialTouchY = 0f
+        var isDragging = false
+        val touchSlopPx = dpToPx(CLICK_DRAG_TOLERANCE_DP)
+
+        bubbleContainer.setOnTouchListener { _, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    snapAnimator?.cancel()
+                    wakeUpBubbleAndScheduleFade()
+                    initialParamX = layoutParams.x
+                    initialParamY = layoutParams.y
+                    initialTouchX = event.rawX
+                    initialTouchY = event.rawY
+                    isDragging = false
+                    true
+                }
+
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = (event.rawX - initialTouchX).toInt()
+                    val dy = (event.rawY - initialTouchY).toInt()
+                    if (abs(dx) > touchSlopPx || abs(dy) > touchSlopPx) {
+                        isDragging = true
+                    }
+                    if (isDragging) {
+                        val (screenWidth, screenHeight) = getScreenSize()
+                        val maxX = (screenWidth - bubbleContainer.width).coerceAtLeast(0)
+                        val maxY = (screenHeight - bubbleContainer.height).coerceAtLeast(0)
+
+                        layoutParams.x = (initialParamX + dx).coerceIn(0, maxX)
+                        layoutParams.y = (initialParamY + dy).coerceIn(0, maxY)
+                        safeUpdateViewLayout()
+                    }
+                    true
+                }
+
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    if (!isDragging) {
+                        expandVolumePanel()
+                    } else {
+                        snapBubbleToNearestEdge()
+                    }
+                    true
+                }
+
+                else -> false
+            }
+        }
+    }
+
+    private fun snapBubbleToNearestEdge() {
+        val (screenWidth, _) = getScreenSize()
+        val bubbleWidth = bubbleContainer.width.takeIf { it > 0 } ?: dpToPx(56f)
+        val currentX = layoutParams.x
+        val centerX = currentX + bubbleWidth / 2
+
+        val targetX = if (centerX < screenWidth / 2) {
+            0
+        } else {
+            (screenWidth - bubbleWidth).coerceAtLeast(0)
+        }
+
+        snapAnimator?.cancel()
+        snapAnimator = ValueAnimator.ofInt(currentX, targetX).apply {
+            duration = 220L
+            interpolator = DecelerateInterpolator()
+            addUpdateListener { animator ->
+                layoutParams.x = animator.animatedValue as Int
+                safeUpdateViewLayout()
+            }
+            start()
+        }
+
+        prefs.edit()
+            .putInt(KEY_SAVED_X, targetX)
+            .putInt(KEY_SAVED_Y, layoutParams.y)
+            .apply()
+
+        wakeUpBubbleAndScheduleFade()
+    }
+
+    private fun setupVolumeSliders() {
+        bindStreamSeekBar(
+            seekBar = seekMedia,
+            valueLabel = tvMediaVal,
+            streamType = AudioManager.STREAM_MUSIC
+        )
+
+        bindStreamSeekBar(
+            seekBar = seekRing,
+            valueLabel = tvRingVal,
+            streamType = AudioManager.STREAM_RING,
+            mirrorNotificationStream = true
+        )
+
+        bindStreamSeekBar(
+            seekBar = seekAlarm,
+            valueLabel = tvAlarmVal,
+            streamType = AudioManager.STREAM_ALARM
+        )
+
+        bindStreamSeekBar(
+            seekBar = seekVoice,
+            valueLabel = tvVoiceVal,
+            streamType = AudioManager.STREAM_VOICE_CALL
+        )
+    }
+
+    private fun bindStreamSeekBar(
+        seekBar: SeekBar,
+        valueLabel: TextView,
+        streamType: Int,
+        mirrorNotificationStream: Boolean = false
+    ) {
+        val maxVol = audioManager.getStreamMaxVolume(streamType).coerceAtLeast(1)
+        seekBar.max = maxVol
+
+        seekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
+                val pct = ((progress.toFloat() / maxVol.toFloat()) * 100f).toInt().coerceIn(0, 100)
+                valueLabel.text = "$pct%"
+
+                if (fromUser) {
+                    resetPanelAutoDismissTimer()
+                    try {
+                        VolumeAccessibilityService.setVolumePrivileged(
+                            fallbackContext = this@FloatingVolumeService,
+                            streamType = streamType,
+                            targetIndex = progress,
+                            showSystemUiPopup = false
+                        )
+                        if (mirrorNotificationStream) {
+                            val maxNotif = audioManager.getStreamMaxVolume(AudioManager.STREAM_NOTIFICATION)
+                            val scaledNotif = ((progress.toFloat() / maxVol.toFloat()) * maxNotif).toInt()
+                            VolumeAccessibilityService.setVolumePrivileged(
+                                fallbackContext = this@FloatingVolumeService,
+                                streamType = AudioManager.STREAM_NOTIFICATION,
+                                targetIndex = scaledNotif,
+                                showSystemUiPopup = false
+                            )
+                        }
+                        updateQuickToggleButtonsUI()
+                    } catch (secEx: SecurityException) {
+                        promptDndPermissionToast()
+                    }
+                }
+            }
+
+            override fun onStartTrackingTouch(sb: SeekBar?) {
+                isUserDraggingSlider = true
+                mainHandler.removeCallbacks(autoDismissPanelRunnable)
+            }
+
+            override fun onStopTrackingTouch(sb: SeekBar?) {
+                isUserDraggingSlider = false
+                resetPanelAutoDismissTimer()
+            }
+        })
+    }
+
+    private fun setupQuickActionToggles() {
+        btnRingerMode.setOnClickListener {
+            resetPanelAutoDismissTimer()
+            val nextMode = when (audioManager.ringerMode) {
+                AudioManager.RINGER_MODE_NORMAL -> AudioManager.RINGER_MODE_VIBRATE
+                AudioManager.RINGER_MODE_VIBRATE -> AudioManager.RINGER_MODE_SILENT
+                else -> AudioManager.RINGER_MODE_NORMAL
+            }
+
+            if (nextMode == AudioManager.RINGER_MODE_SILENT &&
+                !notificationManager.isNotificationPolicyAccessGranted
+            ) {
+                promptDndPermissionToast()
+                openDndSettings()
+                return@setOnClickListener
+            }
+
+            try {
+                val activeContext = VolumeAccessibilityService.instance ?: this
+                val am = activeContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                am.ringerMode = nextMode
+                syncAllSlidersWithSystem()
+                updateQuickToggleButtonsUI()
+            } catch (e: SecurityException) {
+                promptDndPermissionToast()
+                openDndSettings()
+            }
+        }
+
+        btnDndToggle.setOnClickListener {
+            resetPanelAutoDismissTimer()
+            if (!notificationManager.isNotificationPolicyAccessGranted) {
+                promptDndPermissionToast()
+                openDndSettings()
+                return@setOnClickListener
+            }
+
+            val currentFilter = notificationManager.currentInterruptionFilter
+            val newFilter = if (currentFilter == NotificationManager.INTERRUPTION_FILTER_ALL) {
+                NotificationManager.INTERRUPTION_FILTER_PRIORITY
+            } else {
+                NotificationManager.INTERRUPTION_FILTER_ALL
+            }
+
+            try {
+                notificationManager.setInterruptionFilter(newFilter)
+                updateQuickToggleButtonsUI()
+            } catch (e: SecurityException) {
+                promptDndPermissionToast()
+            }
+        }
+    }
+
+    @SuppressLint("ClickableViewAccessibility")
+    private fun setupOutsideTouchAutoDismiss(rootView: View) {
+        rootView.setOnTouchListener { _, event ->
+            if (isPanelExpanded && event.actionMasked == MotionEvent.ACTION_OUTSIDE) {
+                collapseVolumePanel()
+                true
+            } else {
+                false
+            }
+        }
+    }
+
+    private fun expandVolumePanel() {
+        if (rootOverlayView == null) return
+        mainHandler.removeCallbacks(idleFadeRunnable)
+
+        isPanelExpanded = true
+        syncAllSlidersWithSystem()
+        updateQuickToggleButtonsUI()
+
+        bubbleContainer.visibility = View.GONE
+        panelCard.visibility = View.VISIBLE
+        panelCard.alpha = 0f
+        panelCard.scaleX = 0.92f
+        panelCard.scaleY = 0.92f
+
+        val (screenWidth, screenHeight) = getScreenSize()
+        val panelWidthPx = dpToPx(296f)
+        val panelHeightPx = dpToPx(330f)
+
+        // Make expanded panel focusable while open so Android grants foreground audio control privilege
+        layoutParams.flags = (layoutParams.flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()) or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH
+
+        layoutParams.x = ((screenWidth - panelWidthPx) / 2).coerceAtLeast(dpToPx(12f))
+        layoutParams.y = layoutParams.y.coerceIn(
+            dpToPx(32f),
+            (screenHeight - panelHeightPx - dpToPx(32f)).coerceAtLeast(dpToPx(32f))
+        )
+        safeUpdateViewLayout()
+
+        panelCard.animate()
+            .alpha(1f)
+            .scaleX(1f)
+            .scaleY(1f)
+            .setDuration(180L)
+            .start()
+
+        resetPanelAutoDismissTimer()
+    }
+
+    private fun collapseVolumePanel() {
+        if (!isPanelExpanded || rootOverlayView == null) return
+        mainHandler.removeCallbacks(autoDismissPanelRunnable)
+        isPanelExpanded = false
+        isUserDraggingSlider = false
+
+        panelCard.visibility = View.GONE
+        bubbleContainer.visibility = View.VISIBLE
+
+        layoutParams.flags = layoutParams.flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+
+        val (screenWidth, screenHeight) = getScreenSize()
+        val savedX = prefs.getInt(KEY_SAVED_X, screenWidth - dpToPx(56f))
+        val savedY = prefs.getInt(KEY_SAVED_Y, screenHeight / 3)
+
+        layoutParams.x = savedX.coerceIn(0, screenWidth - dpToPx(44f))
+        layoutParams.y = savedY.coerceIn(0, screenHeight - dpToPx(68f))
+        safeUpdateViewLayout()
+
+        wakeUpBubbleAndScheduleFade()
+    }
+
+    private fun syncAllSlidersWithSystem() {
+        updateSingleSlider(seekMedia, tvMediaVal, AudioManager.STREAM_MUSIC)
+        updateSingleSlider(seekRing, tvRingVal, AudioManager.STREAM_RING)
+        updateSingleSlider(seekAlarm, tvAlarmVal, AudioManager.STREAM_ALARM)
+        updateSingleSlider(seekVoice, tvVoiceVal, AudioManager.STREAM_VOICE_CALL)
+    }
+
+    private fun updateSingleSlider(seekBar: SeekBar, label: TextView, streamType: Int) {
+        val max = audioManager.getStreamMaxVolume(streamType).coerceAtLeast(1)
+        val cur = audioManager.getStreamVolume(streamType).coerceIn(0, max)
+        seekBar.max = max
+        seekBar.progress = cur
+        val pct = ((cur.toFloat() / max.toFloat()) * 100f).toInt().coerceIn(0, 100)
+        label.text = "$pct%"
+    }
+
+    private fun updateQuickToggleButtonsUI() {
+        when (audioManager.ringerMode) {
+            AudioManager.RINGER_MODE_SILENT -> {
+                btnRingerMode.text = "Mode: Silent"
+            }
+            AudioManager.RINGER_MODE_VIBRATE -> {
+                btnRingerMode.text = "Mode: Vibrate"
+            }
+            else -> {
+                btnRingerMode.text = "Mode: Ring"
+            }
+        }
+
+        val isDndActive =
+            notificationManager.currentInterruptionFilter != NotificationManager.INTERRUPTION_FILTER_ALL
+        btnDndToggle.text = if (isDndActive) "DND: ON" else "DND: OFF"
+    }
+
+    private fun applyUserCustomizations() {
+        if (rootOverlayView == null) return
+
+        val sizeOption = prefs.getInt(KEY_BUTTON_SIZE, 1)
+        val sizeDp = when (sizeOption) {
+            0 -> 44f
+            2 -> 68f
+            else -> 56f
+        }
+        val sizePx = dpToPx(sizeDp)
+        val bubbleLp = bubbleContainer.layoutParams
+        bubbleLp.width = sizePx
+        bubbleLp.height = sizePx
+        bubbleContainer.layoutParams = bubbleLp
+
+        val opacityPercent = prefs.getInt(KEY_IDLE_OPACITY, 30).coerceIn(10, 100)
+        idleAlphaFraction = opacityPercent / 100f
+
+        val themePref = prefs.getInt(KEY_THEME_MODE, 2)
+        val useLightMode = when (themePref) {
+            0 -> false
+            1 -> true
+            else -> {
+                val nightFlags = resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK
+                nightFlags != Configuration.UI_MODE_NIGHT_YES
+            }
+        }
+
+        val bubbleBgColor = if (useLightMode) Color.parseColor("#E6FFFFFF") else Color.parseColor("#E6212121")
+        val bubbleStrokeColor = if (useLightMode) Color.parseColor("#33000000") else Color.parseColor("#4DFFFFFF")
+        val iconTint = if (useLightMode) Color.parseColor("#1E88E5") else Color.parseColor("#90CAF9")
+
+        val bubbleDrawable = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(bubbleBgColor)
+            setStroke(dpToPx(1.5f), bubbleStrokeColor)
+        }
+        bubbleContainer.background = bubbleDrawable
+        ivBubbleIcon.setColorFilter(iconTint)
+
+        val panelBgColor = if (useLightMode) Color.parseColor("#F7FFFFFF") else Color.parseColor("#F21E1E1E")
+        val primaryTextColor = if (useLightMode) Color.parseColor("#1C1B1F") else Color.parseColor("#F5F5F5")
+        val secondaryTextColor = if (useLightMode) Color.parseColor("#49454F") else Color.parseColor("#CAC4D0")
+
+        val panelDrawable = GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = dpToPx(20f).toFloat()
+            setColor(panelBgColor)
+            setStroke(dpToPx(1f), bubbleStrokeColor)
+        }
+        panelCard.background = panelDrawable
+
+        tvPanelTitle.setTextColor(primaryTextColor)
+        tvLabelMedia.setTextColor(secondaryTextColor)
+        tvLabelRing.setTextColor(secondaryTextColor)
+        tvLabelAlarm.setTextColor(secondaryTextColor)
+        tvLabelVoice.setTextColor(secondaryTextColor)
+
+        tvMediaVal.setTextColor(primaryTextColor)
+        tvRingVal.setTextColor(primaryTextColor)
+        tvAlarmVal.setTextColor(primaryTextColor)
+        tvVoiceVal.setTextColor(primaryTextColor)
+
+        wakeUpBubbleAndScheduleFade()
+    }
+
+    private fun wakeUpBubbleAndScheduleFade() {
+        mainHandler.removeCallbacks(idleFadeRunnable)
+        bubbleContainer.animate().cancel()
+        bubbleContainer.alpha = 1.0f
+        mainHandler.postDelayed(idleFadeRunnable, IDLE_FADE_DELAY_MS)
+    }
+
+    private fun resetPanelAutoDismissTimer() {
+        mainHandler.removeCallbacks(autoDismissPanelRunnable)
+        mainHandler.postDelayed(autoDismissPanelRunnable, PANEL_AUTO_DISMISS_MS)
+    }
+
+    private fun promptDndPermissionToast() {
+        Toast.makeText(
+            this,
+            "Grant 'Do Not Disturb Access' to toggle Silent/DND mode.",
+            Toast.LENGTH_SHORT
+        ).show()
+    }
+
+    private fun openDndSettings() {
+        collapseVolumePanel()
+        val intent = Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        startActivity(intent)
+    }
+
+    private fun safeUpdateViewLayout() {
+        val view = rootOverlayView ?: return
+        if (view.isAttachedToWindow) {
+            try {
+                windowManager.updateViewLayout(view, layoutParams)
+            } catch (_: IllegalArgumentException) {
+            }
+        }
+    }
+
+    private fun getScreenSize(): Pair<Int, Int> {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val metrics = windowManager.currentWindowMetrics
+            val bounds = metrics.bounds
+            Pair(bounds.width(), bounds.height())
+        } else {
+            val dm = DisplayMetrics()
+            @Suppress("DEPRECATION")
+            windowManager.defaultDisplay.getRealMetrics(dm)
+            Pair(dm.widthPixels, dm.heightPixels)
+        }
+    }
+
+    private fun dpToPx(dp: Float): Int {
+        return TypedValue.applyDimension(
+            TypedValue.COMPLEX_UNIT_DIP,
+            dp,
+            resources.displayMetrics
+        ).toInt()
+    }
+
+    override fun onDestroy() {
+        isRunning = false
+        mainHandler.removeCallbacksAndMessages(null)
+        snapAnimator?.cancel()
+        try {
+            unregisterReceiver(systemAudioReceiver)
+        } catch (_: Exception) {
+        }
+        rootOverlayView?.let { view ->
+            if (view.isAttachedToWindow) {
+                windowManager.removeView(view)
+            }
+        }
+        rootOverlayView = null
+        super.onDestroy()
+    }
+}
+EOF
+
+# 11. VolumeTileService.kt
+cat << 'EOF' > "$PROJECT_DIR/app/src/main/java/com/lightweight/floatingvolume/VolumeTileService.kt"
+package com.lightweight.floatingvolume
+
+import android.app.PendingIntent
+import android.content.Context
+import android.content.Intent
+import android.os.Build
+import android.provider.Settings
+import android.service.quicksettings.Tile
+import android.service.quicksettings.TileService
+
+class VolumeTileService : TileService() {
+
+    override fun onStartListening() {
+        super.onStartListening()
+        refreshTileState()
+    }
+
+    override fun onClick() {
+        super.onClick()
+
+        if (!Settings.canDrawOverlays(this)) {
+            val settingsIntent = Intent(this, MainActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            launchActivityAndCollapse(settingsIntent)
+            return
+        }
+
+        val prefs = getSharedPreferences(FloatingVolumeService.PREFS_NAME, Context.MODE_PRIVATE)
+        prefs.edit().putBoolean(FloatingVolumeService.KEY_SERVICE_ENABLED, true).apply()
+
+        val serviceIntent = Intent(this, FloatingVolumeService::class.java).apply {
+            action = FloatingVolumeService.ACTION_EXPAND_PANEL
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(serviceIntent)
+        } else {
+            startService(serviceIntent)
+        }
+
+        refreshTileState()
+    }
+
+    private fun refreshTileState() {
+        val tile = qsTile ?: return
+        val hasOverlay = Settings.canDrawOverlays(this)
+        tile.state = if (hasOverlay && FloatingVolumeService.isRunning) {
+            Tile.STATE_ACTIVE
+        } else {
+            Tile.STATE_INACTIVE
+        }
+        tile.label = "Volume Panel"
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            tile.subtitle = if (FloatingVolumeService.isRunning) "Tap to adjust" else "Tap to start"
+        }
+        tile.updateTile()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun launchActivityAndCollapse(intent: Intent) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            val pendingIntent = PendingIntent.getActivity(
+                this,
+                200,
+                intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            startActivityAndCollapse(pendingIntent)
+        } else {
+            startActivityAndCollapse(intent)
+        }
+    }
+}
+EOF
+
+# 12. BootReceiver.kt
+cat << 'EOF' > "$PROJECT_DIR/app/src/main/java/com/lightweight/floatingvolume/BootReceiver.kt"
+package com.lightweight.floatingvolume
+
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.os.Build
+import android.provider.Settings
+
+class BootReceiver : BroadcastReceiver() {
+
+    override fun onReceive(context: Context, intent: Intent) {
+        val action = intent.action ?: return
+        if (action == Intent.ACTION_BOOT_COMPLETED ||
+            action == Intent.ACTION_LOCKED_BOOT_COMPLETED ||
+            action == "android.intent.action.QUICKBOOT_POWERON"
+        ) {
+            val prefs = context.getSharedPreferences(
+                FloatingVolumeService.PREFS_NAME,
+                Context.MODE_PRIVATE
+            )
+            val isEnabled = prefs.getBoolean(FloatingVolumeService.KEY_SERVICE_ENABLED, true)
+
+            if (isEnabled && Settings.canDrawOverlays(context)) {
+                val serviceIntent = Intent(context, FloatingVolumeService::class.java).apply {
+                    this.action = FloatingVolumeService.ACTION_START
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(serviceIntent)
+                } else {
+                    context.startService(serviceIntent)
+                }
+            }
+        }
+    }
+}
+EOF
+
+# 13. activity_main.xml
+cat << 'EOF' > "$PROJECT_DIR/app/src/main/res/layout/activity_main.xml"
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#F5F7FA"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Floating Volume"
+            android:textColor="#1A1C1E"
+            android:textSize="24sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:layout_marginBottom="16dp"
+            android:text="Ultra-lightweight hardware volume button replacement"
+            android:textColor="#5E6368"
+            android:textSize="14sp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="16dp"
+            android:background="@android:drawable/dialog_holo_light_frame"
+            android:orientation="vertical"
+            android:padding="16dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Enable Floating Volume Button"
+                        android:textColor="#1A1C1E"
+                        android:textSize="16sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="2dp"
+                        android:text="Keeps floating control active across all apps"
+                        android:textColor="#5E6368"
+                        android:textSize="12sp" />
+                </LinearLayout>
+
+                <androidx.appcompat.widget.SwitchCompat
+                    android:id="@+id/switchMasterService"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content" />
+            </LinearLayout>
+
+            <Button
+                android:id="@+id/btnTriggerPanelNow"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:text="Open Volume Panel Now"
+                android:textAllCaps="false" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="16dp"
+            android:background="@android:drawable/dialog_holo_light_frame"
+            android:orientation="vertical"
+            android:padding="16dp">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="12dp"
+                android:text="Step-by-Step Permission Checklist"
+                android:textColor="#1A1C1E"
+                android:textSize="16sp"
+                android:textStyle="bold" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="12dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="1. Display over other apps"
+                        android:textColor="#1A1C1E"
+                        android:textSize="14sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/tvOverlayStatus"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Required"
+                        android:textColor="#C62828"
+                        android:textSize="12sp" />
+                </LinearLayout>
+
+                <Button
+                    android:id="@+id/btnGrantOverlay"
+                    android:layout_width="wrap_content"
+                    android:layout_height="40dp"
+                    android:text="Grant"
+                    android:textAllCaps="false"
+                    android:textSize="13sp" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="12dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="2. Do Not Disturb Access"
+                        android:textColor="#1A1C1E"
+                        android:textSize="14sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/tvDndStatus"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Required for Mute/DND"
+                        android:textColor="#EF6C00"
+                        android:textSize="12sp" />
+                </LinearLayout>
+
+                <Button
+                    android:id="@+id/btnGrantDnd"
+                    android:layout_width="wrap_content"
+                    android:layout_height="40dp"
+                    android:text="Grant"
+                    android:textAllCaps="false"
+                    android:textSize="13sp" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="12dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="3. Disable Battery Optimization"
+                        android:textColor="#1A1C1E"
+                        android:textSize="14sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/tvBatteryStatus"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Prevents OS from closing overlay"
+                        android:textColor="#EF6C00"
+                        android:textSize="12sp" />
+                </LinearLayout>
+
+                <Button
+                    android:id="@+id/btnGrantBattery"
+                    android:layout_width="wrap_content"
+                    android:layout_height="40dp"
+                    android:text="Disable"
+                    android:textAllCaps="false"
+                    android:textSize="13sp" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="4. Accessibility Volume Helper"
+                        android:textColor="#1A1C1E"
+                        android:textSize="14sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/tvAccessibilityStatus"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Fixes sliders not changing volume in background"
+                        android:textColor="#EF6C00"
+                        android:textSize="12sp" />
+                </LinearLayout>
+
+                <Button
+                    android:id="@+id/btnGrantAccessibility"
+                    android:layout_width="wrap_content"
+                    android:layout_height="40dp"
+                    android:text="Enable"
+                    android:textAllCaps="false"
+                    android:textSize="13sp" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="@android:drawable/dialog_holo_light_frame"
+            android:orientation="vertical"
+            android:padding="16dp">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="12dp"
+                android:text="Appearance &amp; Behavior"
+                android:textColor="#1A1C1E"
+                android:textSize="16sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Floating Button Size"
+                android:textColor="#1A1C1E"
+                android:textSize="14sp"
+                android:textStyle="bold" />
+
+            <RadioGroup
+                android:id="@+id/rgButtonSize"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:layout_marginBottom="14dp"
+                android:orientation="horizontal">
+
+                <RadioButton
+                    android:id="@+id/rbSizeSmall"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Small" />
+
+                <RadioButton
+                    android:id="@+id/rbSizeMedium"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:checked="true"
+                    android:text="Medium" />
+
+                <RadioButton
+                    android:id="@+id/rbSizeLarge"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Large" />
+            </RadioGroup>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Idle Opacity (after 3s inactivity)"
+                    android:textColor="#1A1C1E"
+                    android:textSize="14sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/tvIdleOpacityValue"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="30%"
+                    android:textColor="#1E88E5"
+                    android:textSize="14sp"
+                    android:textStyle="bold" />
+            </LinearLayout>
+
+            <SeekBar
+                android:id="@+id/seekIdleOpacity"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:layout_marginBottom="14dp"
+                android:max="90"
+                android:progress="20" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Overlay Theme &amp; Accent"
+                android:textColor="#1A1C1E"
+                android:textSize="14sp"
+                android:textStyle="bold" />
+
+            <RadioGroup
+                android:id="@+id/rgThemeAccent"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:orientation="horizontal">
+
+                <RadioButton
+                    android:id="@+id/rbThemeDark"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Dark" />
+
+                <RadioButton
+                    android:id="@+id/rbThemeLight"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Light" />
+
+                <RadioButton
+                    android:id="@+id/rbThemeSystem"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:checked="true"
+                    android:text="System" />
+            </RadioGroup>
+
+        </LinearLayout>
+
+    </LinearLayout>
+</ScrollView>
+EOF
+
+# 14. layout_floating_widget.xml
+cat << 'EOF' > "$PROJECT_DIR/app/src/main/res/layout/layout_floating_widget.xml"
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/overlayRoot"
+    android:layout_width="wrap_content"
+    android:layout_height="wrap_content">
+
+    <FrameLayout
+        android:id="@+id/bubbleContainer"
+        android:layout_width="56dp"
+        android:layout_height="56dp"
+        android:clickable="true"
+        android:elevation="6dp"
+        android:focusable="false">
+
+        <ImageView
+            android:id="@+id/ivBubbleIcon"
+            android:layout_width="26dp"
+            android:layout_height="26dp"
+            android:layout_gravity="center"
+            android:contentDescription="Open Volume Panel"
+            android:src="@android:drawable/ic_lock_silent_mode_off" />
+    </FrameLayout>
+
+    <LinearLayout
+        android:id="@+id/panelCard"
+        android:layout_width="296dp"
+        android:layout_height="wrap_content"
+        android:elevation="10dp"
+        android:orientation="vertical"
+        android:padding="16dp"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/tvPanelTitle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="12dp"
+            android:gravity="center_vertical"
+            android:text="Volume Control"
+            android:textColor="#F5F5F5"
+            android:textSize="16sp"
+            android:textStyle="bold" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/tvLabelMedia"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Media"
+                android:textColor="#CAC4D0"
+                android:textSize="13sp" />
+
+            <TextView
+                android:id="@+id/tvMediaVal"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="50%"
+                android:textColor="#F5F5F5"
+                android:textSize="13sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <SeekBar
+            android:id="@+id/seekMedia"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:layout_marginBottom="10dp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/tvLabelRing"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Ring &amp; Notification"
+                android:textColor="#CAC4D0"
+                android:textSize="13sp" />
+
+            <TextView
+                android:id="@+id/tvRingVal"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="50%"
+                android:textColor="#F5F5F5"
+                android:textSize="13sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <SeekBar
+            android:id="@+id/seekRing"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:layout_marginBottom="10dp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/tvLabelAlarm"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Alarm"
+                android:textColor="#CAC4D0"
+                android:textSize="13sp" />
+
+            <TextView
+                android:id="@+id/tvAlarmVal"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="50%"
+                android:textColor="#F5F5F5"
+                android:textSize="13sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <SeekBar
+            android:id="@+id/seekAlarm"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:layout_marginBottom="10dp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/tvLabelVoice"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="In-Call Voice"
+                android:textColor="#CAC4D0"
+                android:layout_marginBottom="2dp"
+                android:textSize="13sp" />
+
+            <TextView
+                android:id="@+id/tvVoiceVal"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="50%"
+                android:textColor="#F5F5F5"
+                android:textSize="13sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <SeekBar
+            android:id="@+id/seekVoice"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:layout_marginBottom="14dp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/btnRingerMode"
+                android:layout_width="0dp"
+                android:layout_height="40dp"
+                android:layout_marginEnd="6dp"
+                android:layout_weight="1"
+                android:text="Mode: Ring"
+                android:textAllCaps="false"
+                android:textSize="12sp" />
+
+            <Button
+                android:id="@+id/btnDndToggle"
+                android:layout_width="0dp"
+                android:layout_height="40dp"
+                android:layout_marginStart="6dp"
+                android:layout_weight="1"
+                android:text="DND: OFF"
+                android:textAllCaps="false"
+                android:textSize="12sp" />
+        </LinearLayout>
+
+    </LinearLayout>
+
+</FrameLayout>
+EOF
+
+echo "Done! Updated project created in ./$PROJECT_DIR"
